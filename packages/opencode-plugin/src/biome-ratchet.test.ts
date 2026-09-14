@@ -293,7 +293,45 @@ describe("Biome policy comparison", () => {
 			]),
 		).toEqual([]);
 	});
+});
 
+describe("Biome policy bypass prevention", () => {
+	it("ignores template text but detects suppressions inside template expressions", () => {
+		const templateText = "const example = `// biome-ignore lint/suspicious/noExplicitAny`;";
+		const templateExpression = [
+			"const example = `$",
+			"{(() => {\n// biome-ignore lint/suspicious/noExplicitAny",
+			"\nconst value: any = 1;\nreturn value;\n})()}`;",
+		].join("");
+
+		expect(
+			compareBiomePolicy(config(), config(), [{ status: "modified", afterSource: templateText }]),
+		).toEqual([]);
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{ status: "modified", afterPath: "src/a.ts", afterSource: templateExpression },
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "1 Biome suppression directive added or changed",
+			path: "src/a.ts",
+		});
+	});
+
+	it("requires review for changed language-level lint controls", () => {
+		const baseConfig = JSON.stringify({ javascript: { formatter: { quoteStyle: "double" } } });
+		const headConfig = JSON.stringify({
+			javascript: { formatter: { quoteStyle: "single" }, globals: ["hiddenGlobal"] },
+		});
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
+			kind: "coverage",
+			message: "Biome language or top-level controls changed; explicit policy review required",
+		});
+	});
+});
+
+describe("Biome policy fail-closed controls", () => {
 	it("fails closed when lint overrides change or linting is disabled", () => {
 		const base = JSON.parse(config());
 		const overridden = {

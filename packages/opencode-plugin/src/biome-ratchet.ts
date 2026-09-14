@@ -192,23 +192,82 @@ function ruleOptions(setting: unknown): UnknownRecord | undefined {
 	return options;
 }
 
+interface SourceComment {
+	text: string;
+	start: number;
+	end: number;
+}
+
+function skipQuotedString(source: string, start: number, quote: string): number {
+	for (let index = start + 1; index < source.length; index += 1) {
+		if (source[index] === "\\") index += 1;
+		else if (source[index] === quote) return index + 1;
+	}
+	return source.length;
+}
+
+function scanTemplate(source: string, start: number, comments: SourceComment[]): number {
+	for (let index = start; index < source.length; index += 1) {
+		if (source[index] === "\\") index += 1;
+		else if (source[index] === "`") return index + 1;
+		else if (source[index] === "$" && source[index + 1] === "{") {
+			index = scanCode(source, index + 2, comments, { stopAtBrace: true }) - 1;
+		}
+	}
+	return source.length;
+}
+
+function scanComment(source: string, start: number, multiline: boolean): SourceComment {
+	const boundary = multiline ? source.indexOf("*/", start + 2) : source.indexOf("\n", start + 2);
+	const end = boundary === -1 ? source.length : boundary + (multiline ? 2 : 0);
+	return { text: source.slice(start, end), start, end };
+}
+
+function scanCode(
+	source: string,
+	start: number,
+	comments: SourceComment[],
+	options: { stopAtBrace: boolean },
+): number {
+	for (let index = start; index < source.length; index += 1) {
+		const current = source[index];
+		const next = source[index + 1];
+		if (current === "/" && (next === "/" || next === "*")) {
+			const comment = scanComment(source, index, next === "*");
+			comments.push(comment);
+			index = comment.end - 1;
+		} else if (current === '"' || current === "'") {
+			index = skipQuotedString(source, index, current) - 1;
+		} else if (current === "`") {
+			index = scanTemplate(source, index + 1, comments) - 1;
+		} else if (current === "{") {
+			index = scanCode(source, index + 1, comments, { stopAtBrace: true }) - 1;
+		} else if (current === "}" && options.stopAtBrace) {
+			return index + 1;
+		}
+	}
+	return source.length;
+}
+
+function sourceComments(source: string): SourceComment[] {
+	const comments: SourceComment[] = [];
+	scanCode(source, 0, comments, { stopAtBrace: false });
+	return comments;
+}
+
 function suppressionDirectives(source: string | undefined): string[] {
 	if (!source) return [];
-	const withoutStrings = source.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1/g, (value) =>
-		" ".repeat(value.length),
-	);
-	const commentPattern = /\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
 	const directives: string[] = [];
-	for (const match of withoutStrings.matchAll(commentPattern)) {
-		const directive = match[0].match(
+	for (const comment of sourceComments(source)) {
+		const directive = comment.text.match(
 			/^(?:\/\/|\/\*)\s*(biome-ignore(?:-all|-start|-end)?\b[^\n*]*)/,
 		)?.[1];
 		if (!directive) continue;
 		const normalized = directive.trim().replace(/\s+/g, " ");
-		const line = source.slice(0, match.index ?? 0).split("\n").length;
+		const line = source.slice(0, comment.start).split("\n").length;
 		const scope = getScopeIdentity(source, line) ?? "";
 		const anchor = source
-			.slice((match.index ?? 0) + match[0].length)
+			.slice(comment.end)
 			.split("\n")
 			.map((line) => line.trim())
 			.find((line) => line && !line.startsWith("//") && !line.startsWith("/*"));
@@ -312,6 +371,39 @@ function unsupportedPolicyViolations(base: UnknownRecord, head: UnknownRecord): 
 			{ kind: "coverage" as const, message: `${label} changed; explicit policy review required` },
 		];
 	});
+}
+
+function lintAffectingTopLevelControls(config: UnknownRecord): UnknownRecord {
+	const ignored = new Set([
+		"$schema",
+		"assist",
+		"extends",
+		"files",
+		"formatter",
+		"linter",
+		"overrides",
+		"vcs",
+	]);
+	return Object.fromEntries(
+		Object.entries(config)
+			.filter(([key]) => !ignored.has(key))
+			.map(([key, value]) => [key, isRecord(value) ? withoutKeys(value, ["formatter"]) : value]),
+	);
+}
+
+function topLevelPolicyViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolation[] {
+	if (
+		JSON.stringify(lintAffectingTopLevelControls(base)) ===
+		JSON.stringify(lintAffectingTopLevelControls(head))
+	) {
+		return [];
+	}
+	return [
+		{
+			kind: "coverage",
+			message: "Biome language or top-level controls changed; explicit policy review required",
+		},
+	];
 }
 
 function flattenRuleControls(value: unknown, prefix = ""): Map<string, unknown> {
@@ -432,6 +524,7 @@ export function compareBiomePolicy(
 	return [
 		...coverageViolations(base, head),
 		...unsupportedPolicyViolations(base, head),
+		...topLevelPolicyViolations(base, head),
 		...ruleControlViolations(base, head),
 		...ruleViolations(base, head),
 		...overrideViolations(base, head),

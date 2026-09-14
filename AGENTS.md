@@ -40,6 +40,15 @@
 - If you change plugin behavior, update `README.md` and any affected docs under `docs/`.
 - If you change memory kinds or their presentation, update all three surfaces together: `packages/core/src/store.ts`, `packages/mcp-server/src/index.ts`, and `packages/ui/src/tabs/feed.ts`.
 
+## Codex review handling
+
+- Treat the current PR or Graphite stack as one review unit. Gather all open GitHub Codex threads for that unit before assigning corrections.
+- One stack-aware Codex triage consumes the unit's initial external-review slot. Do not launch a general CodeReviewer for each thread or repeat the same broad review after later edits.
+- Fingerprint and classify every finding as `fixed`, `deferred`, `invalid`, `duplicate`, or `addressed-upstack`; assign all confirmed fixes as one correction batch.
+- After targeted validation, permit one delta review of the correction commits and unresolved findings. Stop routine review after that pass.
+- Reopen review only when behavior boundaries changed, validation failed, a new high-risk finding arrived, or the user explicitly requested another pass.
+- Lint-feedback remains edit-local and does not consume the external-review budget; it must not trigger a broad reviewer chain.
+
 ## Code shape
 
 - Replace nested ternaries with branches or a lookup.

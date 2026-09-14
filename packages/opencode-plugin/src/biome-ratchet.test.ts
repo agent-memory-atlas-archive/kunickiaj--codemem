@@ -227,6 +227,23 @@ describe("Biome policy comparison", () => {
 		]);
 	});
 
+	it("rejects a new explicit rule disable that could override a preset", () => {
+		const baseConfig = JSON.stringify({
+			linter: { enabled: true, rules: { preset: "recommended" } },
+		});
+		const headConfig = JSON.stringify({
+			linter: {
+				enabled: true,
+				rules: { preset: "recommended", correctness: { noUnusedVariables: "off" } },
+			},
+		});
+
+		expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
+			kind: "rule-level",
+			message: "Biome rule explicitly disabled: correctness.noUnusedVariables",
+		});
+	});
+
 	it("detects changed suppression identities even when the count is unchanged", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [

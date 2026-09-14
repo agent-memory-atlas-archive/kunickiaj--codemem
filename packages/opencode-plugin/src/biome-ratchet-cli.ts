@@ -269,10 +269,14 @@ async function applyHeadIgnorePolicy(
 }
 
 async function runBiome(directory: string, entrypoint: string): Promise<string> {
-	const result = await runCommand(process.execPath, [entrypoint, "lint", "--reporter=json", "."], {
-		cwd: directory,
-		allowedExitCodes: [0, 1],
-	});
+	const result = await runCommand(
+		process.execPath,
+		[entrypoint, "lint", "--reporter=json", "--max-diagnostics=none", "."],
+		{
+			cwd: directory,
+			allowedExitCodes: [0, 1],
+		},
+	);
 	return result.stdout;
 }
 

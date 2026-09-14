@@ -239,6 +239,16 @@ function isLinterDisabled(base: UnknownRecord, head: UnknownRecord): boolean {
 	return !isRecord(head.linter) || head.linter.enabled === false;
 }
 
+function newDisabledRuleViolations(
+	baseRules: Map<string, unknown>,
+	headRules: Map<string, unknown>,
+): PolicyViolation[] {
+	return [...headRules].flatMap(([rule, headSetting]) => {
+		if (baseRules.has(rule) || severity(headSetting) !== 0) return [];
+		return [{ kind: "rule-level" as const, message: `Biome rule explicitly disabled: ${rule}` }];
+	});
+}
+
 function ruleViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolation[] {
 	if (isLinterDisabled(base, head)) {
 		return [{ kind: "rule-level", message: "Biome linter disabled" }];
@@ -269,7 +279,7 @@ function ruleViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolati
 			});
 		}
 	}
-	return violations;
+	return [...violations, ...newDisabledRuleViolations(baseRules, headRules)];
 }
 
 function withoutKeys(record: UnknownRecord | undefined, keys: string[]): UnknownRecord {

@@ -244,6 +244,25 @@ describe("Biome policy comparison", () => {
 		});
 	});
 
+	it("rejects newly weakened severities for recommended preset rules", () => {
+		const baseConfig = JSON.stringify({
+			linter: { enabled: true, rules: { preset: "recommended" } },
+		});
+
+		for (const level of ["warn", "info"]) {
+			const headConfig = JSON.stringify({
+				linter: {
+					enabled: true,
+					rules: { preset: "recommended", correctness: { noUnusedVariables: level } },
+				},
+			});
+			expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
+				kind: "rule-level",
+				message: "Biome preset rule weakened: correctness.noUnusedVariables",
+			});
+		}
+	});
+
 	it("detects changed suppression identities even when the count is unchanged", () => {
 		expect(
 			compareBiomePolicy(config(), config(), [
@@ -324,6 +343,23 @@ describe("Biome policy bypass prevention", () => {
 		});
 	});
 
+	it("detects suppressions after regex literals containing quotes", () => {
+		expect(
+			compareBiomePolicy(config(), config(), [
+				{
+					status: "modified",
+					afterPath: "src/a.ts",
+					afterSource:
+						'const quote = /"/;\n// biome-ignore lint/suspicious/noExplicitAny\nconst value: any = 1;',
+				},
+			]),
+		).toContainEqual({
+			kind: "suppression",
+			message: "1 Biome suppression directive added or changed",
+			path: "src/a.ts",
+		});
+	});
+
 	it("requires review for changed language-level lint controls", () => {
 		const baseConfig = JSON.stringify({ javascript: { formatter: { quoteStyle: "double" } } });
 		const headConfig = JSON.stringify({
@@ -371,6 +407,19 @@ describe("Biome policy fail-closed controls", () => {
 		expect(compareBiomePolicy(JSON.stringify(base), JSON.stringify(disabled), [])).toMatchObject([
 			{ kind: "rule-level", message: "Biome linter disabled" },
 		]);
+	});
+
+	it("fails closed when language controls change inside an override", () => {
+		const base = JSON.parse(config());
+		const head = {
+			...base,
+			overrides: [{ includes: ["src/**"], javascript: { globals: ["hiddenGlobal"] } }],
+		};
+
+		expect(compareBiomePolicy(JSON.stringify(base), JSON.stringify(head), [])).toContainEqual({
+			kind: "rule-level",
+			message: "Biome lint overrides changed; explicit policy review required",
+		});
 	});
 
 	it("requires explicit coverage review for changed ignore policy", () => {

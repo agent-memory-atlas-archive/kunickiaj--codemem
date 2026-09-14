@@ -206,6 +206,48 @@ function skipQuotedString(source: string, start: number, quote: string): number 
 	return source.length;
 }
 
+function canStartRegex(source: string, index: number): boolean {
+	const prefix = source.slice(0, index).trimEnd();
+	if (!prefix) return true;
+	const previous = prefix.at(-1) ?? "";
+	if ("([{:;,=!?&|+-*%^~<>".includes(previous)) return true;
+	const keyword = prefix.match(/([A-Za-z_$][\w$]*)$/)?.[1];
+	return Boolean(
+		keyword &&
+			[
+				"await",
+				"case",
+				"delete",
+				"do",
+				"else",
+				"in",
+				"of",
+				"return",
+				"throw",
+				"typeof",
+				"void",
+				"yield",
+			].includes(keyword),
+	);
+}
+
+function skipRegex(source: string, start: number): number {
+	const match = source
+		.slice(start)
+		.match(/^\/(?:\\[\s\S]|\[(?:\\[\s\S]|[^\]\\\r\n])*\]|[^/\\[\r\n])*\/[A-Za-z]*/u);
+	return match ? start + match[0].length : start + 1;
+}
+
+function scanSlash(source: string, index: number, comments: SourceComment[]): number | undefined {
+	const next = source[index + 1];
+	if (next === "/" || next === "*") {
+		const comment = scanComment(source, index, next === "*");
+		comments.push(comment);
+		return comment.end;
+	}
+	return canStartRegex(source, index) ? skipRegex(source, index) : undefined;
+}
+
 function scanTemplate(source: string, start: number, comments: SourceComment[]): number {
 	for (let index = start; index < source.length; index += 1) {
 		if (source[index] === "\\") index += 1;
@@ -223,6 +265,15 @@ function scanComment(source: string, start: number, multiline: boolean): SourceC
 	return { text: source.slice(start, end), start, end };
 }
 
+function scanCodeToken(source: string, index: number, comments: SourceComment[]): number {
+	const current = source[index];
+	if (current === "/") return scanSlash(source, index, comments) ?? index + 1;
+	if (current === '"' || current === "'") return skipQuotedString(source, index, current);
+	if (current === "`") return scanTemplate(source, index + 1, comments);
+	if (current === "{") return scanCode(source, index + 1, comments, { stopAtBrace: true });
+	return index + 1;
+}
+
 function scanCode(
 	source: string,
 	start: number,
@@ -230,21 +281,8 @@ function scanCode(
 	options: { stopAtBrace: boolean },
 ): number {
 	for (let index = start; index < source.length; index += 1) {
-		const current = source[index];
-		const next = source[index + 1];
-		if (current === "/" && (next === "/" || next === "*")) {
-			const comment = scanComment(source, index, next === "*");
-			comments.push(comment);
-			index = comment.end - 1;
-		} else if (current === '"' || current === "'") {
-			index = skipQuotedString(source, index, current) - 1;
-		} else if (current === "`") {
-			index = scanTemplate(source, index + 1, comments) - 1;
-		} else if (current === "{") {
-			index = scanCode(source, index + 1, comments, { stopAtBrace: true }) - 1;
-		} else if (current === "}" && options.stopAtBrace) {
-			return index + 1;
-		}
+		if (source[index] === "}" && options.stopAtBrace) return index + 1;
+		index = scanCodeToken(source, index, comments) - 1;
 	}
 	return source.length;
 }
@@ -298,13 +336,27 @@ function isLinterDisabled(base: UnknownRecord, head: UnknownRecord): boolean {
 	return isRecord(head.linter) && head.linter.enabled === false;
 }
 
-function newDisabledRuleViolations(
+function usesRecommendedPreset(config: UnknownRecord): boolean {
+	return (
+		isRecord(config.linter) &&
+		isRecord(config.linter.rules) &&
+		config.linter.rules.preset === "recommended"
+	);
+}
+
+function newRuleViolations(
+	base: UnknownRecord,
 	baseRules: Map<string, unknown>,
 	headRules: Map<string, unknown>,
 ): PolicyViolation[] {
 	return [...headRules].flatMap(([rule, headSetting]) => {
-		if (baseRules.has(rule) || severity(headSetting) !== 0) return [];
-		return [{ kind: "rule-level" as const, message: `Biome rule explicitly disabled: ${rule}` }];
+		if (baseRules.has(rule)) return [];
+		const headSeverity = severity(headSetting);
+		if (headSeverity === 0) {
+			return [{ kind: "rule-level" as const, message: `Biome rule explicitly disabled: ${rule}` }];
+		}
+		if (!usesRecommendedPreset(base) || headSeverity === undefined || headSeverity >= 3) return [];
+		return [{ kind: "rule-level" as const, message: `Biome preset rule weakened: ${rule}` }];
 	});
 }
 
@@ -338,7 +390,7 @@ function ruleViolations(base: UnknownRecord, head: UnknownRecord): PolicyViolati
 			});
 		}
 	}
-	return [...violations, ...newDisabledRuleViolations(baseRules, headRules)];
+	return [...violations, ...newRuleViolations(base, baseRules, headRules)];
 }
 
 function withoutKeys(record: UnknownRecord | undefined, keys: string[]): UnknownRecord {
@@ -485,8 +537,17 @@ function ruleControlViolations(base: UnknownRecord, head: UnknownRecord): Policy
 function lintOverrides(config: UnknownRecord): unknown[] {
 	if (!Array.isArray(config.overrides)) return [];
 	return config.overrides.flatMap((override) => {
-		if (!isRecord(override) || !isRecord(override.linter)) return [];
-		return [{ includes: override.includes, linter: override.linter }];
+		if (!isRecord(override)) return [];
+		return [
+			Object.fromEntries(
+				Object.entries(override)
+					.filter(([key]) => key !== "assist" && key !== "formatter")
+					.map(([key, value]) => [
+						key,
+						isRecord(value) ? withoutKeys(value, ["formatter"]) : value,
+					]),
+			),
+		];
 	});
 }
 

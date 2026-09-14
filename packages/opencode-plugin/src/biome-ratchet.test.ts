@@ -296,6 +296,12 @@ describe("Biome policy comparison", () => {
 });
 
 describe("Biome policy bypass prevention", () => {
+	it("treats an absent base linter as enabled by default", () => {
+		expect(
+			compareBiomePolicy("{}", JSON.stringify({ linter: { enabled: false } }), []),
+		).toContainEqual({ kind: "rule-level", message: "Biome linter disabled" });
+	});
+
 	it("ignores template text but detects suppressions inside template expressions", () => {
 		const templateText = "const example = `// biome-ignore lint/suspicious/noExplicitAny`;";
 		const templateExpression = [
@@ -327,6 +333,25 @@ describe("Biome policy bypass prevention", () => {
 		expect(compareBiomePolicy(baseConfig, headConfig, [])).toContainEqual({
 			kind: "coverage",
 			message: "Biome language or top-level controls changed; explicit policy review required",
+		});
+	});
+
+	it("requires review when an inherited Biome policy file changes", () => {
+		const configWithExtends = JSON.stringify({ extends: ["./config/biome-base.jsonc"] });
+		const inheritedChange = {
+			status: "modified" as const,
+			beforePath: "config/biome-base.jsonc",
+			afterPath: "config/biome-base.jsonc",
+			beforeSource: '{ "linter": { "rules": { "preset": "recommended" } } }',
+			afterSource: '{ "linter": { "rules": { "preset": "none" } } }',
+		};
+
+		expect(
+			compareBiomePolicy(configWithExtends, configWithExtends, [inheritedChange]),
+		).toContainEqual({
+			kind: "coverage",
+			message: "Inherited Biome policy changed; explicit policy review required",
+			path: "config/biome-base.jsonc",
 		});
 	});
 });

@@ -294,8 +294,8 @@ function coverageViolations(base: UnknownRecord, head: UnknownRecord): PolicyVio
 }
 
 function isLinterDisabled(base: UnknownRecord, head: UnknownRecord): boolean {
-	if (!isRecord(base.linter) || base.linter.enabled === false) return false;
-	return !isRecord(head.linter) || head.linter.enabled === false;
+	if (isRecord(base.linter) && base.linter.enabled === false) return false;
+	return isRecord(head.linter) && head.linter.enabled === false;
 }
 
 function newDisabledRuleViolations(
@@ -404,6 +404,43 @@ function topLevelPolicyViolations(base: UnknownRecord, head: UnknownRecord): Pol
 			message: "Biome language or top-level controls changed; explicit policy review required",
 		},
 	];
+}
+
+function extendsPaths(config: UnknownRecord): string[] {
+	const values =
+		typeof config.extends === "string" ? [config.extends] : stringArray(config.extends);
+	return values.filter((value) => value.startsWith(".")).map(normalizePath);
+}
+
+function looksLikeBiomeConfig(source: string | undefined): boolean {
+	return Boolean(source?.match(/biomejs\.dev\/schemas|"(?:extends|files|linter|vcs)"\s*:/));
+}
+
+function inheritedPolicyViolations(
+	base: UnknownRecord,
+	head: UnknownRecord,
+	changes: ChangedPath[],
+): PolicyViolation[] {
+	const references = new Set([...extendsPaths(base), ...extendsPaths(head)]);
+	if (references.size === 0) return [];
+	return changes.flatMap((change) => {
+		const changedPath = normalizePath(change.afterPath ?? change.beforePath ?? "");
+		const isJsonConfig = changedPath.endsWith(".json") || changedPath.endsWith(".jsonc");
+		if (
+			!references.has(changedPath) &&
+			(!isJsonConfig ||
+				(!looksLikeBiomeConfig(change.beforeSource) && !looksLikeBiomeConfig(change.afterSource)))
+		) {
+			return [];
+		}
+		return [
+			{
+				kind: "coverage" as const,
+				message: "Inherited Biome policy changed; explicit policy review required",
+				path: changedPath,
+			},
+		];
+	});
 }
 
 function flattenRuleControls(value: unknown, prefix = ""): Map<string, unknown> {
@@ -525,6 +562,7 @@ export function compareBiomePolicy(
 		...coverageViolations(base, head),
 		...unsupportedPolicyViolations(base, head),
 		...topLevelPolicyViolations(base, head),
+		...inheritedPolicyViolations(base, head, changes),
 		...ruleControlViolations(base, head),
 		...ruleViolations(base, head),
 		...overrideViolations(base, head),

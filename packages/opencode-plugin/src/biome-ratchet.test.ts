@@ -120,8 +120,8 @@ describe("Biome diagnostic comparison", () => {
 			{ ...diagnostic("src/a.ts", 30, 20, "same body"), scopeIdentity: ":binding:handler" },
 		];
 		const after = [
-			{ ...diagnostic("src/a.ts", 10, 20, "same body"), scopeIdentity: ":binding:handler" },
-			{ ...diagnostic("src/a.ts", 30, 29, "same body"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 10, 31, "same body"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 30, 20, "same body"), scopeIdentity: ":binding:handler" },
 		];
 
 		expect(() =>
@@ -129,6 +129,23 @@ describe("Biome diagnostic comparison", () => {
 				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
 			]),
 		).toThrow("Ambiguous");
+	});
+
+	it("allows repeated measured scopes when their sorted values do not increase", () => {
+		const before = [
+			{ ...diagnostic("src/a.ts", 10, 30, "same body"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 30, 20, "same body"), scopeIdentity: ":binding:handler" },
+		];
+		const after = [
+			{ ...diagnostic("src/a.ts", 20, 20, "same body"), scopeIdentity: ":binding:handler" },
+			{ ...diagnostic("src/a.ts", 40, 29, "same body"), scopeIdentity: ":binding:handler" },
+		];
+
+		expect(
+			compareChangedDiagnostics(before, after, [
+				{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" },
+			]),
+		).toEqual([]);
 	});
 });
 

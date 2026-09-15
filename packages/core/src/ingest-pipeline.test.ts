@@ -2978,57 +2978,6 @@ describe("ingest() integration", { timeout: 15_000 }, () => {
 		expect(session.ended_at).not.toBeNull();
 	});
 
-	it("treats filtered summary-only micro-session raw-event flushes as terminal no-op", async () => {
-		const summaryOnlyObserver = {
-			observe: async () => ({
-				raw: `<summary>
-					<request>No code changes were made</request>
-				</summary>`,
-				parsed: null,
-				provider: "test",
-				model: "test-model",
-			}),
-			getStatus: () => ({
-				provider: "test",
-				model: "test-model",
-				runtime: "test",
-				auth: { source: "none", type: "none", hasToken: false },
-			}),
-		};
-
-		const payload = buildPayload({
-			events: [
-				{
-					type: "user_prompt",
-					prompt_text: "ok",
-					prompt_number: 1,
-					timestamp: new Date().toISOString(),
-				},
-				{
-					type: "assistant_message",
-					assistant_text: "Done.",
-					timestamp: new Date().toISOString(),
-				},
-			],
-			sessionContext: {
-				source: "opencode",
-				streamId: "test-stream-filtered-summary-only-micro",
-				promptCount: 1,
-				toolCount: 0,
-				durationMs: 20_000,
-				flusher: "raw_events",
-			},
-		});
-
-		await ingest(payload, store, { observer: summaryOnlyObserver } as unknown as IngestOptions);
-
-		expect(store.recent(10)).toHaveLength(0);
-		const session = store.db
-			.prepare("SELECT ended_at FROM sessions ORDER BY id DESC LIMIT 1")
-			.get() as { ended_at: string | null };
-		expect(session.ended_at).not.toBeNull();
-	});
-
 	it("does not terminally no-op a prompt-only raw-event flush before assistant context arrives", async () => {
 		const observer = {
 			observe: async () => ({

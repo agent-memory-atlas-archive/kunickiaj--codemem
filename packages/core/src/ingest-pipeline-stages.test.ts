@@ -40,6 +40,23 @@ function observer() {
 	};
 }
 
+function filteredSummaryObserver() {
+	return {
+		observe: async () => ({
+			raw: "<summary><request>No code changes were made</request></summary>",
+			parsed: null,
+			provider: "test",
+			model: "test-model",
+		}),
+		getStatus: () => ({
+			provider: "test",
+			model: "test-model",
+			runtime: "test",
+			auth: { source: "none", type: "none", hasToken: false },
+		}),
+	};
+}
+
 describe("ingest persistence stages", () => {
 	let tmpDir: string;
 	let store: MemoryStore;
@@ -82,5 +99,31 @@ describe("ingest persistence stages", () => {
 		};
 		expect(memories.count).toBe(0);
 		expect(usage.count).toBe(0);
+	});
+
+	it("soft-skips filtered summary-only raw-event micro-sessions", async () => {
+		const input: IngestPayload = {
+			cwd: "/tmp/test-project",
+			events: [
+				{ type: "user_prompt", prompt_text: "ok", prompt_number: 1 },
+				{ type: "assistant_message", assistant_text: "Done." },
+			],
+			sessionContext: {
+				source: "opencode",
+				streamId: "test-stream-filtered-summary-only-micro",
+				promptCount: 1,
+				toolCount: 0,
+				durationMs: 20_000,
+				flusher: "raw_events",
+			},
+		};
+
+		await ingest(input, store, { observer: filteredSummaryObserver() } as unknown as IngestOptions);
+
+		expect(store.recent(10)).toHaveLength(0);
+		const session = store.db.prepare("SELECT ended_at FROM sessions LIMIT 1").get() as {
+			ended_at: string | null;
+		};
+		expect(session.ended_at).not.toBeNull();
 	});
 });

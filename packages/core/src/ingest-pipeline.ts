@@ -857,9 +857,9 @@ function applyCaptureRouting(
 
 function shouldSoftSkipRawOutput(
 	stage: IngestSessionStage,
+	prepared: PreparedIngestStage,
 	inference: ObserverInferenceStage,
 	capture: CaptureRoutingStage,
-	suppressSummary: boolean,
 	summary: SummaryCandidate | null,
 ): boolean {
 	const parsed = inference.response.parsed;
@@ -868,7 +868,18 @@ function shouldSoftSkipRawOutput(
 		parsed.observations.length === 0 &&
 		parsed.summary === null;
 	const locallySuppressedSummaryOnlyMicro =
-		parsed.observations.length === 0 && parsed.summary !== null && suppressSummary;
+		parsed.observations.length === 0 &&
+		parsed.summary !== null &&
+		shouldSuppressSummaryOnlyOutput({
+			sessionContext: stage.sessionContext,
+			observationsCount: 0,
+			hasSummaryCandidate: true,
+			latestPrompt: prepared.latestPrompt,
+			toolEventCount: prepared.toolEvents.length,
+			hasAssistantMessage: Boolean(prepared.lastAssistantMessage),
+			hasDelegatedTask: prepared.hasDelegatedTask,
+			skipSummaryReason: parsed.skipSummaryReason,
+		});
 	const captureSuppressedTelemetryOnly =
 		stage.captureRoutingEnabled &&
 		capture.suppressedCount > 0 &&
@@ -931,7 +942,7 @@ function resolveOutputDisposition(
 	) {
 		return { sessionClass, sessionMetadata, softSkip: false, summary };
 	}
-	if (shouldSoftSkipRawOutput(stage, inference, capture, suppressSummary, summary)) {
+	if (shouldSoftSkipRawOutput(stage, prepared, inference, capture, summary)) {
 		return { sessionClass, sessionMetadata, softSkip: true, summary };
 	}
 	throw new RawEventObserverOutputError(

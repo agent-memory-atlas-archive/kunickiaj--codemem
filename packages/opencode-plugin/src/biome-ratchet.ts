@@ -120,11 +120,12 @@ function diagnosticsForPath(
 	return diagnostics.filter((diagnostic) => diagnostic.path === normalized);
 }
 
-function assertUnambiguousMeasuredPairing(
+function safeAmbiguousMeasuredCategories(
 	before: LintDiagnostic[],
 	after: LintDiagnostic[],
 	path: string,
-): void {
+): Set<string> {
+	const safeCategories = new Set<string>();
 	const categories = new Set(
 		[...before, ...after].map((diagnostic) => diagnostic.category).filter(isMeasuredCategory),
 	);
@@ -137,14 +138,27 @@ function assertUnambiguousMeasuredPairing(
 		);
 		const beforeIdentities = categoryBefore.map((diagnostic) => diagnostic.scopeIdentity);
 		const afterIdentities = categoryAfter.map((diagnostic) => diagnostic.scopeIdentity);
-		if (
+		const ambiguous =
 			identities.some((identity) => !identity) ||
 			new Set(beforeIdentities).size !== beforeIdentities.length ||
-			new Set(afterIdentities).size !== afterIdentities.length
-		) {
+			new Set(afterIdentities).size !== afterIdentities.length;
+		if (ambiguous && measuredValuesCouldRegress(categoryBefore, categoryAfter)) {
 			throw new Error(`Ambiguous ${category} function identity in ${path}`);
 		}
+		if (ambiguous) safeCategories.add(category);
 	}
+	return safeCategories;
+}
+
+function measuredValuesCouldRegress(before: LintDiagnostic[], after: LintDiagnostic[]): boolean {
+	if (after.length > before.length) return true;
+	const previousValues = before
+		.map((diagnostic) => diagnostic.measuredValue ?? 0)
+		.sort((a, b) => b - a);
+	const currentValues = after
+		.map((diagnostic) => diagnostic.measuredValue ?? 0)
+		.sort((a, b) => b - a);
+	return currentValues.some((value, index) => value > (previousValues[index] ?? 0));
 }
 
 export function compareChangedDiagnostics(
@@ -157,9 +171,16 @@ export function compareChangedDiagnostics(
 		if (!change.afterPath) continue;
 		const before = diagnosticsForPath(baseDiagnostics, change.beforePath);
 		const after = diagnosticsForPath(headDiagnostics, change.afterPath);
-		assertUnambiguousMeasuredPairing(before, after, change.afterPath);
+		const safeAmbiguousCategories = safeAmbiguousMeasuredCategories(
+			before,
+			after,
+			change.afterPath,
+		);
 		regressions.push(
-			...compareDiagnostics(before, after).map((diagnostic) => ({
+			...compareDiagnostics(
+				before.filter((diagnostic) => !safeAmbiguousCategories.has(diagnostic.category)),
+				after.filter((diagnostic) => !safeAmbiguousCategories.has(diagnostic.category)),
+			).map((diagnostic) => ({
 				...diagnostic,
 				path: normalizePath(change.afterPath as string),
 			})),

@@ -95,6 +95,25 @@ describe("Biome diagnostic comparison", () => {
 		).toEqual([added]);
 	});
 
+	it("preserves an unambiguous measured diagnostic when its scope is renamed", () => {
+		const before = {
+			...diagnostic("src/a.ts", 10, 18, "function beforeName"),
+			scopeIdentity: ":function:beforeName",
+		};
+		const after = {
+			...diagnostic("src/a.ts", 10, 18, "function afterName"),
+			scopeIdentity: ":function:afterName",
+		};
+
+		expect(
+			compareChangedDiagnostics(
+				[before],
+				[after],
+				[{ status: "modified", beforePath: "src/a.ts", afterPath: "src/a.ts" }],
+			),
+		).toEqual([]);
+	});
+
 	it("maps renames and ignores diagnostics removed with deleted files", () => {
 		const before = [
 			diagnostic("src/old.ts", 4, 16, "same"),

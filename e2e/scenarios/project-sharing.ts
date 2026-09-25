@@ -44,6 +44,7 @@ interface FixtureSummary {
 			canonical_project_identity: string;
 			authority_state: string;
 			attempt_count: number;
+			safe_error_code: string | null;
 		}>;
 		team_memberships: Array<{ team_id: string; identity_id: string; status: string }>;
 		teams: Array<{ team_id: string; display_name: string; status: string }>;
@@ -145,7 +146,26 @@ function fixture(ctx: ScenarioContext, service: string, action: string, artifact
 	return parseJson<FixtureSummary>(result.stdout, artifact);
 }
 
-function startServer(ctx: ScenarioContext, service: string, artifact: string): void {
+const OWNER_SERVER_LOG_PATH = "/tmp/codemem-e2e-owner-serve.log";
+
+function captureOwnerSnapshotFailureLog(ctx: ScenarioContext, artifact: string): void {
+	const script = `import { readFileSync } from 'node:fs';
+		let text = '';
+		try { text = readFileSync(${JSON.stringify(OWNER_SERVER_LOG_PATH)}, 'utf8'); } catch {}
+		console.log(text.split('\\n').filter(line => line.startsWith('[sync] recipient policy coordinator snapshot failed:')).slice(-50).join('\\n'));`;
+	try {
+		ctx.compose.exec("peer-a", ["node", "--input-type=module", "-e", script], artifact, 30_000);
+	} catch {
+		// Diagnostic capture must not replace the revocation result.
+	}
+}
+
+function startServer(
+	ctx: ScenarioContext,
+	service: string,
+	artifact: string,
+	options: { captureLogs?: boolean } = {},
+): void {
 	const staticResult = ctx.compose.exec(
 		service,
 		[
@@ -158,31 +178,36 @@ function startServer(ctx: ScenarioContext, service: string, artifact: string): v
 		30_000,
 	);
 	assertStatus(staticResult.status, 0, `${service} static preparation failed`);
-	const result = ctx.compose.execDetached(
-		service,
-		[
-			"env",
-			"CODEMEM_VIEWER_STATIC_DIR=/tmp/viewer-static",
-			...CLI_PREFIX,
-			"serve",
-			"start",
-			"--foreground",
-			"--db-path",
-			"/data/mem.sqlite",
-			"--host",
-			"0.0.0.0",
-			"--port",
-			"38888",
-		],
-		artifact,
-	);
+	const command = [
+		"env",
+		"CODEMEM_VIEWER_STATIC_DIR=/tmp/viewer-static",
+		...CLI_PREFIX,
+		"serve",
+		"start",
+		"--foreground",
+		"--db-path",
+		"/data/mem.sqlite",
+		"--host",
+		"0.0.0.0",
+		"--port",
+		"38888",
+	];
+	const loggedCommand = options.captureLogs
+		? ["sh", "-c", `${command.join(" ")} > ${OWNER_SERVER_LOG_PATH} 2>&1`]
+		: command;
+	const result = ctx.compose.execDetached(service, loggedCommand, artifact);
 	assertStatus(result.status, 0, `${service} viewer/sync server failed to start`);
 }
 
-function restartServer(ctx: ScenarioContext, service: string, artifact: string): void {
+function restartServer(
+	ctx: ScenarioContext,
+	service: string,
+	artifact: string,
+	options: { captureLogs?: boolean } = {},
+): void {
 	const restarted = ctx.compose.restart(service, `${artifact}-container`);
 	assertStatus(restarted.status, 0, `${service} container failed to restart`);
-	startServer(ctx, service, `${artifact}-start`);
+	startServer(ctx, service, `${artifact}-start`, options);
 }
 
 function readConfig(
@@ -888,7 +913,7 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		{ ...ownerConfig, sync_interval_s: 2 },
 		"39-enable-owner-reconciliation",
 	);
-	restartServer(ctx, "peer-a", "39-restart-owner-for-reconciliation");
+	restartServer(ctx, "peer-a", "39-restart-owner-for-reconciliation", { captureLogs: true });
 	await waitForServer(ctx, "peer-a", "39-owner-ready-for-reconciliation");
 	await waitFor(
 		async () => {
@@ -1014,6 +1039,13 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 		"summary",
 		"39-owner-before-peer-c-enrollment-disable",
 	);
+	if (
+		beforeEnrollmentDisable.policy.authority_states.some(
+			(authority) => authority.safe_error_code === "recipient_policy_snapshot_not_fresh",
+		)
+	) {
+		captureOwnerSnapshotFailureLog(ctx, "39-owner-snapshot-failure-log-before-disable");
+	}
 	const selectedScopeMembership = beforeEnrollmentDisable.managed_memberships.find(
 		(member) => member.device_id === peerC.device_id && member.status === "active",
 	);
@@ -1047,40 +1079,50 @@ export async function runProjectSharingScenario(ctx: ScenarioContext): Promise<v
 
 	// Act: periodic owner maintenance reads the disabled enrollment and reconciles the exact Project scope.
 	let revocationAttemptCount = -1;
-	await waitFor(
-		async () => {
-			const owner = fixture(ctx, "peer-a", "summary", "39-owner-peer-c-revocation-convergence");
-			assert(
-				owner.managed_memberships.some(
-					(member) =>
-						member.scope_id === selectedScopeMembership.scope_id &&
-						member.device_id === peerC.device_id &&
-						member.status === "revoked",
-				),
-				"owner maintenance has not revoked peer-c from the selected managed Project",
-			);
-			assert(
-				owner.policy.identity_devices.some(
-					(device) => device.device_id === peerC.device_id && device.status === "active",
-				),
-				"group-scoped enrollment disable globally revoked peer-c's Identity device",
-			);
-			assert(
-				!owner.peers.some(
-					(peer) =>
-						peer.peer_device_id === peerC.device_id &&
-						(peer.pinned_fingerprint || peer.trust_provenance === "coordinator_policy"),
-				),
-				"coordinator-policy-derived peer-c trust survived the scope refresh",
-			);
-			const authority = owner.policy.authority_states.find(
-				(state) => state.canonical_project_identity === selected.workspace_identity,
-			);
-			assert(authority, "selected Project recipient-policy authority state is missing");
-			revocationAttemptCount = authority.attempt_count;
-		},
-		{ description: "group-scoped peer-c enrollment revocation", timeoutMs: 180_000, intervalMs: 3_000 },
-	);
+	let snapshotFailureLogged = false;
+	try {
+		await waitFor(
+			async () => {
+				const owner = fixture(ctx, "peer-a", "summary", "39-owner-peer-c-revocation-convergence");
+				const authority = owner.policy.authority_states.find(
+					(state) => state.canonical_project_identity === selected.workspace_identity,
+				);
+				if (!snapshotFailureLogged && authority?.safe_error_code === "recipient_policy_snapshot_not_fresh") {
+					snapshotFailureLogged = true;
+					captureOwnerSnapshotFailureLog(ctx, "39-owner-snapshot-failure-log-first-error");
+				}
+				assert(
+					owner.managed_memberships.some(
+						(member) =>
+							member.scope_id === selectedScopeMembership.scope_id &&
+							member.device_id === peerC.device_id &&
+							member.status === "revoked",
+					),
+					"owner maintenance has not revoked peer-c from the selected managed Project",
+				);
+				assert(
+					owner.policy.identity_devices.some(
+						(device) => device.device_id === peerC.device_id && device.status === "active",
+					),
+					"group-scoped enrollment disable globally revoked peer-c's Identity device",
+				);
+				assert(
+					!owner.peers.some(
+						(peer) =>
+							peer.peer_device_id === peerC.device_id &&
+							(peer.pinned_fingerprint || peer.trust_provenance === "coordinator_policy"),
+					),
+					"coordinator-policy-derived peer-c trust survived the scope refresh",
+				);
+				assert(authority, "selected Project recipient-policy authority state is missing");
+				revocationAttemptCount = authority.attempt_count;
+			},
+			{ description: "group-scoped peer-c enrollment revocation", timeoutMs: 180_000, intervalMs: 3_000 },
+		);
+	} catch (error) {
+		captureOwnerSnapshotFailureLog(ctx, "39-owner-snapshot-failure-log-on-timeout");
+		throw error;
+	}
 
 	// Act: let another deterministic maintenance tick run to exercise retry convergence.
 	await waitFor(

@@ -208,6 +208,16 @@ Dial preference is intentionally conservative:
 2. if mDNS returns addresses on the current LAN, codemem still tries those first
 3. otherwise codemem uses the stored address cache, which may have been refreshed by the coordinator
 
+Codemem keeps at most eight normalized addresses per peer in the active cache and during direct dialing. At least one
+fresh coordinator candidate comes first when available, even if paired addresses fill all eight slots. Explicitly paired
+addresses retain their own stored copy across later refreshes.
+Verified re-pairing addresses take priority over obsolete cached addresses, and the last successful address remains a
+preferred fallback even when the active list is full.
+
+For older peers whose addresses predate source tracking, codemem retains the original list separately and includes the
+first and last two as fallbacks when it compacts the active cache. This preserves the original data without allowing
+thousands of obsolete Docker, VPN, DHCP, or temporary IPv6 addresses to consume a daemon tick in serial attempts.
+
 If the coordinator is unavailable, codemem falls back to cached addresses and mDNS.
 
 Address storage is normalized to explicit base URLs (for example `http://host:7337`) so equivalent discovery results do

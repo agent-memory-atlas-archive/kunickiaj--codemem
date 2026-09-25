@@ -5,6 +5,17 @@
  * consistent address handling across the sync pipeline.
  */
 
+/** Keep serial peer dialing bounded when network interfaces churn over time. */
+export const MAX_PEER_ADDRESSES = 8;
+
+/** Leave room for previously configured or successfully dialed fallback addresses. */
+const COORDINATOR_FALLBACK_ADDRESSES = 2;
+
+interface MergeAddressOptions {
+	defaultHttpPort?: number;
+	maxAddresses?: number;
+}
+
 /**
  * Normalize an address to a consistent URL form.
  *
@@ -76,7 +87,7 @@ export function addressDedupeKey(address: string): string {
 export function mergeAddresses(
 	existing: string[],
 	candidates: string[],
-	options?: { defaultHttpPort?: number },
+	options?: MergeAddressOptions,
 ): string[] {
 	const normalized: string[] = [];
 	const seen = new Set<string>();
@@ -86,6 +97,7 @@ export function mergeAddresses(
 		if (!cleaned || seen.has(key)) continue;
 		seen.add(key);
 		normalized.push(cleaned);
+		if (options?.maxAddresses && normalized.length >= options.maxAddresses) break;
 	}
 	return normalized;
 }
@@ -98,7 +110,48 @@ export function mergeAddresses(
 export function mergeAddressesPreferCandidates(
 	existing: string[],
 	candidates: string[],
-	options?: { defaultHttpPort?: number },
+	options?: MergeAddressOptions,
 ): string[] {
 	return mergeAddresses(candidates, existing, options);
+}
+
+/** Prefer coordinator results without letting a full response evict every existing fallback. */
+export function mergeCoordinatorPeerAddresses(
+	existing: string[],
+	candidates: string[],
+	manual: string[] = [],
+	options?: { requiredFreshAddresses?: number; successfulAddress?: string },
+): string[] {
+	const pinned = mergeAddresses(manual, []);
+	const manualFallbacks =
+		pinned.length <= MAX_PEER_ADDRESSES
+			? pinned
+			: mergeAddresses(pinned.slice(0, 2), pinned.slice(-2));
+	const protectedAddresses = mergeAddresses(
+		options?.successfulAddress ? [options.successfulAddress] : [],
+		manualFallbacks,
+		{ maxAddresses: MAX_PEER_ADDRESSES },
+	);
+	const freshCandidates = mergeAddresses(candidates, []);
+	const fallbackFreshLimit = protectedAddresses.length
+		? MAX_PEER_ADDRESSES - protectedAddresses.length
+		: MAX_PEER_ADDRESSES - COORDINATOR_FALLBACK_ADDRESSES;
+	const freshLimit = Math.max(
+		fallbackFreshLimit,
+		Math.min(
+			options?.requiredFreshAddresses ?? (freshCandidates.length > 0 ? 1 : 0),
+			MAX_PEER_ADDRESSES,
+		),
+	);
+	if (freshLimit === 0) return protectedAddresses;
+	const fresh = freshCandidates.slice(0, freshLimit);
+	const withManual = mergeAddresses(
+		fresh,
+		protectedAddresses.slice(0, MAX_PEER_ADDRESSES - freshLimit),
+		{
+			maxAddresses: MAX_PEER_ADDRESSES,
+		},
+	);
+	const withFallbacks = mergeAddresses(withManual, existing, { maxAddresses: MAX_PEER_ADDRESSES });
+	return mergeAddresses(withFallbacks, freshCandidates, { maxAddresses: MAX_PEER_ADDRESSES });
 }

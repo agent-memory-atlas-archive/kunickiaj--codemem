@@ -824,6 +824,8 @@ export function bootstrapSchema(db: Database): void {
 		ensureRawEventCaptureContextSchema(db);
 		ensurePolicyTeamDeviceEligibilityColumns(db);
 		ensureSyncPeerSignatureStateSchema(db);
+		ensureSyncPeerManualAddressesColumn(db);
+		ensureSyncPeerLastSuccessAddressColumn(db);
 		ensureRetrievalAttemptColumns(db);
 		ensureOutcomeEvidenceColumns(db);
 		ensureMemoryOwnershipSchemas(db);
@@ -835,6 +837,18 @@ export function bootstrapSchema(db: Database): void {
 	// bootstrap transaction so an unavailable extension cannot produce a
 	// half-successful core schema, and cannot prevent first-run stats/setup.
 	ensureVectorSchema(db);
+}
+
+function ensureSyncPeerManualAddressesColumn(db: Database): void {
+	if (!columnExists(db, "sync_peers", "manual_addresses_json")) {
+		db.exec("ALTER TABLE sync_peers ADD COLUMN manual_addresses_json TEXT");
+	}
+}
+
+function ensureSyncPeerLastSuccessAddressColumn(db: Database): void {
+	if (!columnExists(db, "sync_peers", "last_success_address")) {
+		db.exec("ALTER TABLE sync_peers ADD COLUMN last_success_address TEXT");
+	}
 }
 
 function ensurePolicyTeamDeviceEligibilityColumns(db: Database): void {

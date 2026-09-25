@@ -1,6 +1,10 @@
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { mergeAddresses } from "./address-utils.js";
+import {
+	MAX_PEER_ADDRESSES,
+	mergeAddresses,
+	mergeCoordinatorPeerAddresses,
+} from "./address-utils.js";
 import type { Database } from "./db.js";
 import * as schema from "./schema.js";
 
@@ -21,6 +25,27 @@ export function loadPeerAddresses(db: Database, peerDeviceId: string): string[] 
 	}
 }
 
+/** Null means the peer predates source tracking; its existing addresses must be preserved on first refresh. */
+export function loadManualPeerAddresses(db: Database, peerDeviceId: string): string[] | null {
+	const row = db
+		.prepare("SELECT manual_addresses_json FROM sync_peers WHERE peer_device_id = ?")
+		.get(peerDeviceId) as { manual_addresses_json: string | null } | undefined;
+	if (row?.manual_addresses_json == null) return null;
+	try {
+		const raw: unknown = JSON.parse(row.manual_addresses_json);
+		return Array.isArray(raw) ? raw.filter((item): item is string => typeof item === "string") : [];
+	} catch {
+		return [];
+	}
+}
+
+export function loadSuccessfulPeerAddress(db: Database, peerDeviceId: string): string | null {
+	const row = db
+		.prepare("SELECT last_success_address FROM sync_peers WHERE peer_device_id = ?")
+		.get(peerDeviceId) as { last_success_address: string | null } | undefined;
+	return row?.last_success_address ?? null;
+}
+
 export function updatePeerAddresses(
 	db: Database,
 	peerDeviceId: string,
@@ -30,9 +55,28 @@ export function updatePeerAddresses(
 		pinnedFingerprint?: string;
 		publicKey?: string;
 		replaceTrust?: boolean;
+		coordinatorCandidates?: boolean;
 	},
 ): string[] {
-	const merged = mergeAddresses(loadPeerAddresses(db, peerDeviceId), addresses);
+	const existingAddresses = loadPeerAddresses(db, peerDeviceId);
+	const storedManual = loadManualPeerAddresses(db, peerDeviceId);
+	const legacyManual = storedManual == null ? existingAddresses : storedManual;
+	const manual =
+		options?.replaceTrust && addresses.length > 0
+			? mergeAddresses(legacyManual, addresses)
+			: legacyManual;
+	const successfulAddress = loadSuccessfulPeerAddress(db, peerDeviceId) ?? undefined;
+	let merged = mergeAddresses(existingAddresses, addresses);
+	if (options?.coordinatorCandidates) {
+		merged = mergeCoordinatorPeerAddresses(existingAddresses, addresses, manual, {
+			successfulAddress,
+		});
+	} else if (options?.replaceTrust && addresses.length > 0) {
+		merged = mergeCoordinatorPeerAddresses(existingAddresses, addresses, manual, {
+			requiredFreshAddresses: Math.min(mergeAddresses(addresses, []).length, MAX_PEER_ADDRESSES),
+			successfulAddress,
+		});
+	}
 	const now = new Date().toISOString();
 	const addressesJson = JSON.stringify(merged);
 
@@ -45,6 +89,7 @@ export function updatePeerAddresses(
 			pinned_fingerprint: options?.pinnedFingerprint ?? null,
 			public_key: options?.publicKey ?? null,
 			addresses_json: addressesJson,
+			manual_addresses_json: JSON.stringify(manual),
 			created_at: now,
 			last_seen_at: now,
 		})
@@ -59,6 +104,7 @@ export function updatePeerAddresses(
 					? sql`COALESCE(excluded.public_key, ${schema.syncPeers.public_key})`
 					: sql`COALESCE(${schema.syncPeers.public_key}, excluded.public_key)`,
 				addresses_json: sql`excluded.addresses_json`,
+				manual_addresses_json: sql`excluded.manual_addresses_json`,
 				last_seen_at: sql`excluded.last_seen_at`,
 			},
 		})

@@ -125,6 +125,23 @@ export function createSetupEffectRunner(dependencies: SetupEffectDependencies): 
 			} catch (recoveryError) {
 				recoveryCause = recoveryError;
 			}
+			if (
+				effect.kind === "load" &&
+				!effect.refresh &&
+				!effect.completionOnly &&
+				cause instanceof LegacyTeamSetupApiError &&
+				cause.errorCode === "team_setup_confirmation_stale" &&
+				recoveredView &&
+				recoveredView.state !== "unavailable"
+			) {
+				return {
+					status: "success",
+					generation: effect.generation,
+					id: effect.id,
+					kind: effect.kind,
+					view: recoveredView,
+				};
+			}
 			return {
 				status: "failure",
 				generation: effect.generation,
@@ -205,10 +222,13 @@ async function recover(
 	}
 	if (
 		effect.kind === "load" &&
-		(effect.refresh || effect.completionOnly || cause.errorCode !== "team_setup_confirmation_stale")
+		!effect.refresh &&
+		!effect.completionOnly &&
+		cause.errorCode === "team_setup_confirmation_stale"
 	) {
-		return undefined;
+		return dependencies.loadDetail(effect.candidateRef);
 	}
+	if (effect.kind === "load") return undefined;
 	return dependencies.loadDetail(effect.candidateRef);
 }
 

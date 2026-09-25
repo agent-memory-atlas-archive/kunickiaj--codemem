@@ -3106,3 +3106,203 @@ describe("legacy Team setup dialog", () => {
 		expect(document.activeElement?.id).toBe("tabBtn-sharing");
 	});
 });
+
+describe("Team setup dialog recovery from stale links", () => {
+	it("renders the close X immediately without waiting for icon initialization", () => {
+		setup(vi.fn().mockResolvedValue(detail()));
+		const close = document.querySelector<HTMLButtonElement>(
+			'.legacy-team-setup-card button[aria-label="Close Set up Team"]',
+		);
+		expect(close?.querySelector("svg.modal-close-button-icon path")?.getAttribute("d")).toBe(
+			"M18 6 6 18M6 6l12 12",
+		);
+	});
+
+	it("refreshes a superseded initial setup link only after an explicit retry", async () => {
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"));
+		const refreshCandidate = vi.fn().mockResolvedValue(detail({ devices: [device()] }));
+		setup({ loadDetail, refreshCandidate });
+
+		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+		expect(refreshCandidate).not.toHaveBeenCalled();
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Set up Example Team"));
+		expect(refreshCandidate).toHaveBeenCalledWith("opaque-candidate");
+		expect(document.querySelector('[role="alert"]')).toBeNull();
+	});
+
+	it("identifies coordinator unavailability while refreshing a stale setup link", async () => {
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"));
+		const refreshCandidate = vi
+			.fn()
+			.mockRejectedValue(new LegacyTeamSetupApiError(503, "team_setup_roster_unavailable"));
+		setup({ loadDetail, refreshCandidate });
+
+		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"coordinator connection",
+			),
+		);
+		expect(document.querySelector('[role="alert"]')?.textContent).not.toContain(
+			"changed since it was last reviewed",
+		);
+		expect(document.body.textContent).not.toContain("team_setup_roster_unavailable");
+	});
+
+	it("keeps stale-state guidance if refreshing also reports a stale link", async () => {
+		setup({
+			loadDetail: vi
+				.fn()
+				.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale")),
+			refreshCandidate: vi
+				.fn()
+				.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale")),
+		});
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"changed since it was last reviewed",
+			),
+		);
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Retry"));
+		expect(document.querySelector('[role="alert"]')?.textContent).not.toContain(
+			"coordinator connection",
+		);
+	});
+
+	it("uses the refreshed unavailable reason instead of the original stale error", async () => {
+		setup({
+			loadDetail: vi
+				.fn()
+				.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale")),
+			refreshCandidate: vi.fn().mockResolvedValue(
+				detail({
+					conflictState: "team_setup_roster_unavailable",
+					draftState: "stale",
+				}),
+			),
+		});
+		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"coordinator connection",
+			),
+		);
+		expect(document.querySelector('[role="alert"]')?.textContent).not.toContain(
+			"changed since it was last reviewed",
+		);
+	});
+});
+
+describe("Team setup dialog completion races during load", () => {
+	it("checks completed detail after the follow-up read reports a completion conflict", async () => {
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_completion_conflict"))
+			.mockResolvedValueOnce(detail({ draftState: "completed" }));
+		const refreshCandidate = vi.fn();
+		setup({ loadDetail, refreshCandidate });
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"Retry to load the completed setup",
+			),
+		);
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+		expect(loadDetail).toHaveBeenCalledTimes(3);
+		expect(refreshCandidate).not.toHaveBeenCalled();
+	});
+
+	it("reads a completed setup before attempting to refresh a stale initial detail", async () => {
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
+			.mockResolvedValueOnce(detail({ draftState: "completed" }));
+		const refreshCandidate = vi.fn();
+		setup({ loadDetail, refreshCandidate });
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+		expect(refreshCandidate).not.toHaveBeenCalled();
+	});
+
+	it("checks completion after refresh reports another stale state", async () => {
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
+			.mockResolvedValueOnce(detail({ draftState: "completed" }));
+		const refreshCandidate = vi
+			.fn()
+			.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"));
+		setup({ loadDetail, refreshCandidate });
+		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(refreshCandidate).toHaveBeenCalledOnce());
+		await vi.waitFor(() =>
+			expect(
+				document.getElementById("legacy-team-setup-retry")?.getAttribute("aria-disabled"),
+			).toBeNull(),
+		);
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+		expect(loadDetail).toHaveBeenCalledTimes(3);
+		expect(refreshCandidate).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("Team setup completion check recovery", () => {
+	it("keeps coordinator guidance and a read-only retry after completion cannot be checked", async () => {
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"))
+			.mockRejectedValueOnce(new LegacyTeamSetupApiError(503, "team_setup_completion_unavailable"))
+			.mockResolvedValueOnce(detail({ draftState: "completed" }));
+		const refreshCandidate = vi.fn();
+		setup({ loadDetail, refreshCandidate });
+		await vi.waitFor(() =>
+			expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+				"Team setup completion could not be checked",
+			),
+		);
+		expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+			"Check the coordinator connection",
+		);
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Team setup complete"));
+		expect(loadDetail).toHaveBeenCalledTimes(3);
+		expect(refreshCandidate).not.toHaveBeenCalled();
+	});
+});
+
+describe("Team setup stale retry lifecycle", () => {
+	it("blocks dismissal and switching Teams during an explicitly requested refresh", async () => {
+		const pendingRefresh = deferred<LegacyTeamSetupDetailResponseV1>();
+		const loadDetail = vi
+			.fn()
+			.mockRejectedValue(new LegacyTeamSetupApiError(409, "team_setup_confirmation_stale"));
+		const refreshCandidate = vi.fn().mockReturnValue(pendingRefresh.promise);
+		setup({ loadDetail, refreshCandidate });
+		await vi.waitFor(() => expect(document.querySelector('[role="alert"]')).not.toBeNull());
+		expect(refreshCandidate).not.toHaveBeenCalled();
+		act(() => document.getElementById("legacy-team-setup-retry")?.click());
+		await vi.waitFor(() => expect(refreshCandidate).toHaveBeenCalledOnce());
+		act(() => document.querySelector<HTMLButtonElement>(".modal-footer button")?.click());
+		act(() => dialogControls.onOpenChange?.(false));
+		act(() => {
+			openLegacyTeamSetup("other-candidate");
+		});
+		expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+		expect(loadDetail).toHaveBeenCalledTimes(2);
+		pendingRefresh.resolve(detail());
+		await vi.waitFor(() => expect(document.body.textContent).toContain("Set up Example Team"));
+	});
+});

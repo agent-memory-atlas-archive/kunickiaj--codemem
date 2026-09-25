@@ -901,7 +901,7 @@ function testRecipientFocusedIdentityViews() {
 		expect(text).not.toContain("directly shared active Project — Codemem");
 	});
 
-	it("groups exact same-label Project identities with a bounded accessible preview", () => {
+	it("shows each shared Project name once without changing the underlying recipient edges", () => {
 		const privatePath = "/private/worktrees/codemem";
 		const privateRemote = "ssh://git@private.example.test/codemem.git";
 		const repeatedProjects: RecipientPolicyManagementProject[] = [
@@ -932,18 +932,89 @@ function testRecipientFocusedIdentityViews() {
 
 		mount(intent({ projectRecipients: [...teamEdges, ...identityEdges] }), {}, repeatedProjects);
 
-		expect(visiblePanel().textContent).toContain("5Shared projects");
-		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(5);
+		expect(visiblePanel().textContent).toContain("4Shared projects");
+		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(4);
+		expect(visiblePanel().textContent).not.toContain("duplicate name");
 		clickTab("Identities");
-		expect(visiblePanel().textContent).toContain(
-			"Shared directlyAPICodemem — duplicate name 1 of 2Codemem — duplicate name 2 of 2DocsTools",
-		);
+		expect(visiblePanel().textContent).toContain("Shared directlyAPICodememDocsTools");
+		expect(visiblePanel().querySelectorAll(".tag-chip")).toHaveLength(4);
 		expect(document.body.outerHTML).not.toContain(privatePath);
 		expect(document.body.outerHTML).not.toContain(privateRemote);
 	});
 }
 
 describe("recipient-focused Sharing Identity views", testRecipientFocusedIdentityViews);
+
+describe("recipient-focused Sharing unavailable Projects", () => {
+	registerRecipientFocusedSharingLifecycle();
+
+	it("keeps missing Project identities distinct while collapsing known worktree names", () => {
+		const knownProjects: RecipientPolicyManagementProject[] = [
+			{
+				canonicalProjectIdentity: "known-a",
+				displayName: "Example Project",
+				existingMemoryCount: 1,
+			},
+			{
+				canonicalProjectIdentity: "known-b",
+				displayName: "Example Project",
+				existingMemoryCount: 2,
+			},
+		];
+		const projectRecipients = ["known-a", "known-b", "missing-a", "missing-b"].map(
+			(projectId, index) => ({
+				version: 1 as const,
+				canonicalProjectIdentity: projectId,
+				recipientKind: "team" as const,
+				teamId: "team-example",
+				intentSource: "user" as const,
+				policyRevision: `revision-${index}`,
+				status: "active" as const,
+			}),
+		);
+		mount(intent({ projectRecipients }), {}, knownProjects);
+
+		expect(visiblePanel().textContent).toContain("3Shared projects");
+		expect(
+			[...visiblePanel().querySelectorAll(".tag-chip")].map((chip) => chip.textContent),
+		).toEqual(["Example Project", "Unavailable Project 1 of 2", "Unavailable Project 2 of 2"]);
+		expect(document.body.outerHTML).not.toContain("missing-a");
+		expect(document.body.outerHTML).not.toContain("missing-b");
+	});
+
+	it("keeps placeholder names distinct from real Projects with the same labels", () => {
+		const knownProjects: RecipientPolicyManagementProject[] = [
+			{
+				canonicalProjectIdentity: "known-a",
+				displayName: "Unavailable Project",
+				existingMemoryCount: 1,
+			},
+			{
+				canonicalProjectIdentity: "known-b",
+				displayName: "Unavailable Project 1 of 2",
+				existingMemoryCount: 1,
+			},
+		];
+		const projectRecipients = ["known-a", "known-b", "missing-a", "missing-b"].map(
+			(projectId, index) => ({
+				version: 1 as const,
+				canonicalProjectIdentity: projectId,
+				recipientKind: "team" as const,
+				teamId: "team-example",
+				intentSource: "user" as const,
+				policyRevision: `collision-${index}`,
+				status: "active" as const,
+			}),
+		);
+		mount(intent({ projectRecipients }), {}, knownProjects);
+		const names = [...visiblePanel().querySelectorAll(".tag-chip")].map((chip) => chip.textContent);
+		expect(names).toHaveLength(4);
+		expect(new Set(names).size).toBe(4);
+		expect(names).toContain("Unavailable Project");
+		expect(names).toContain("Unavailable Project 1 of 2");
+		expect(visiblePanel().textContent).toContain("4Shared projects");
+	});
+});
 
 function testRecipientFocusedRecipientActions() {
 	registerRecipientFocusedSharingLifecycle();

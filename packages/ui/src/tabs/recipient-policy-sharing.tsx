@@ -10,7 +10,10 @@ import type {
 	RecipientPolicyIntentGraphV1,
 } from "../lib/api/sync";
 import { deviceIdentityAttentionItems } from "../lib/device-identity-inventory";
-import { stableProjectPresentationLabels } from "../lib/project-identity-presentation";
+import {
+	projectDisplayNameKey,
+	projectIdentitySummaryGroups,
+} from "../lib/project-identity-presentation";
 import { ProvenanceChip } from "./feed/components/ProvenanceChip";
 import { TagChip } from "./feed/components/TagChip";
 import { RecipientPolicyInvitations } from "./recipient-policy-invitations";
@@ -314,18 +317,35 @@ function countLabel(count: number, singular: string, plural = `${singular}s`): s
 	return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
 }
 
+function unavailableProjectNames(count: number, knownNames: string[]): string[] {
+	const used = new Set(knownNames.map(projectDisplayNameKey));
+	return Array.from({ length: count }, (_, index) => {
+		const base =
+			count === 1 ? "Unavailable Project" : `Unavailable Project ${index + 1} of ${count}`;
+		let label = base;
+		let duplicate = 1;
+		while (used.has(projectDisplayNameKey(label))) {
+			label = `${base} (details unavailable ${duplicate})`;
+			duplicate += 1;
+		}
+		used.add(projectDisplayNameKey(label));
+		return label;
+	});
+}
+
 function activeProjectNames(
 	projectIds: Iterable<string>,
 	projectsById: Map<string, RecipientPolicyManagementProject>,
 ): string[] {
-	const projects = [...new Set(projectIds)].map((projectId) => ({
-		canonicalId: projectId,
-		displayName: projectsById.get(projectId)?.displayName ?? "Unavailable Project",
-	}));
-	const labels = stableProjectPresentationLabels(projects);
-	return projects
-		.map((project) => labels.get(project.canonicalId) ?? project.displayName)
-		.sort((left, right) => left.localeCompare(right));
+	const distinctIds = [...new Set(projectIds)];
+	const projects = distinctIds.flatMap((projectId) => {
+		const project = projectsById.get(projectId);
+		return project ? [{ canonicalId: projectId, displayName: project.displayName }] : [];
+	});
+	const unavailableCount = distinctIds.length - projects.length;
+	const knownNames = projectIdentitySummaryGroups(projects).map((group) => group.displayName);
+	const unavailableNames = unavailableProjectNames(unavailableCount, knownNames);
+	return [...knownNames, ...unavailableNames].sort((left, right) => left.localeCompare(right));
 }
 
 const PROJECT_CHIP_LIMIT = 8;

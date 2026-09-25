@@ -118,19 +118,28 @@ function disclosureButton(): HTMLButtonElement {
 }
 
 describe("FeedItemCard pack-faithful content", () => {
-	it("shows narrative followed by every fact without a representation switch", () => {
+	it("shows observation key points first with the full narrative in a closed disclosure", () => {
 		renderCard(observation());
 
 		const detail = mount.querySelector(".feed-detail");
 		const narrative = detail?.querySelector(".feed-body.narrative");
 		const facts = detail?.querySelector(".feed-pack-facts");
+		const context = detail?.querySelector<HTMLDetailsElement>(".feed-observation-context");
 		expect(mount.querySelector(".feed-title")?.tagName).toBe("DIV");
+		expect(facts?.textContent).toContain("Key points");
 		expect(narrative?.textContent).toContain("Final narrative paragraph.");
 		expect(facts?.textContent).toContain("First durable fact");
 		expect(facts?.textContent).toContain("Second durable fact");
+		expect(context?.open).toBe(false);
+		expect(context?.querySelector("summary")?.textContent).toBe("Full context");
+		expect(context?.querySelector("summary")?.getAttribute("aria-label")).toBe(
+			"Full context for Diagnostic memory",
+		);
 		expect(
-			(narrative as Node).compareDocumentPosition(facts as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+			(facts as Node).compareDocumentPosition(context as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+		if (context) context.open = true;
+		expect(context?.open).toBe(true);
 		expect(detail?.textContent).not.toContain("Legacy fallback");
 		expect(mount.querySelector('[role="radiogroup"]')).toBeNull();
 	});
@@ -148,6 +157,27 @@ describe("FeedItemCard pack-faithful content", () => {
 			"Final fallback paragraph.",
 		);
 		expect(mount.querySelector(".feed-pack-facts")).toBeNull();
+		expect(mount.querySelector(".feed-observation-context")).toBeNull();
+	});
+
+	it("shows the narrative directly when facts contain only blank entries", () => {
+		renderCard(observation({ facts: ["  ", ""], narrative: "Useful observation context." }));
+
+		expect(mount.querySelector(".feed-observation-points")).toBeNull();
+		expect(mount.querySelector(".feed-observation-context")).toBeNull();
+		expect(mount.querySelector(".feed-detail .feed-body.narrative")?.textContent).toContain(
+			"Useful observation context.",
+		);
+	});
+
+	it("keeps the legacy body visible when all structured facts are blank", () => {
+		renderCard(observation({ facts: ["  ", ""], narrative: "" }));
+
+		expect(mount.querySelector(".feed-observation-points")).toBeNull();
+		expect(mount.querySelector(".feed-observation-context")).toBeNull();
+		expect(mount.querySelector(".feed-detail .feed-body.narrative")?.textContent).toContain(
+			"Legacy fallback",
+		);
 	});
 
 	it("uses the stored session-summary title and structured pack fields", () => {
@@ -168,6 +198,7 @@ describe("FeedItemCard pack-faithful content", () => {
 		expect(mount.querySelector(".feed-detail")?.textContent).toContain(
 			"Release candidate waits for smoke testing",
 		);
+		expect(mount.querySelector(".feed-observation-context")).toBeNull();
 	});
 });
 
@@ -338,9 +369,49 @@ describe("FeedItemCard search evidence", () => {
 
 	it("does not duplicate evidence already visible in expanded content", () => {
 		state.feedQuery = "coordinator";
-		renderCard(observation({ narrative: "The coordinator routes through the approved peer." }));
+		renderCard(
+			observation({ facts: [], narrative: "The coordinator routes through the approved peer." }),
+		);
 		expect(mount.querySelector(".feed-detail")?.textContent).toContain("coordinator");
 		expect(mount.querySelector(".feed-search-match")).toBeNull();
+	});
+
+	it("shows a search excerpt when only closed observation context matches", () => {
+		state.feedQuery = "coordinator";
+		renderCard(
+			observation({
+				facts: ["Approved peer routes"],
+				narrative: "The coordinator changed the route.",
+			}),
+		);
+
+		expect(mount.querySelector(".feed-observation-context")?.hasAttribute("open")).toBe(false);
+		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("coordinator");
+	});
+
+	it("updates search evidence as observation context opens and closes", () => {
+		state.feedQuery = "coordinator";
+		renderCard(
+			observation({
+				facts: ["Approved peer routes"],
+				narrative: "The coordinator changed the route.",
+			}),
+		);
+		const context = mount.querySelector<HTMLDetailsElement>(".feed-observation-context");
+		if (!context) throw new Error("Expected observation context disclosure");
+		expect(mount.querySelector(".feed-search-match")).not.toBeNull();
+
+		act(() => {
+			context.open = true;
+			context.dispatchEvent(new Event("toggle"));
+		});
+		expect(mount.querySelector(".feed-search-match")).toBeNull();
+
+		act(() => {
+			context.open = false;
+			context.dispatchEvent(new Event("toggle"));
+		});
+		expect(mount.querySelector(".feed-search-match mark.match")?.textContent).toBe("coordinator");
 	});
 
 	it("retains an excerpt when Markdown hides a matching link destination", () => {

@@ -248,12 +248,13 @@ export interface SyncPeerStatus {
 	sync_status?: string;
 	ping_status?: string;
 	fresh?: boolean;
+	recent_failed_attempt?: boolean;
 }
 
 export interface SyncPeer {
 	peer_device_id?: string;
-	peer_name?: string;
 	name?: string;
+	peer_name?: string;
 	display_name?: string;
 	actor_id?: string;
 	fingerprint?: string;
@@ -263,6 +264,7 @@ export interface SyncPeer {
 	shareable_count?: number;
 	scope_label?: string;
 	status?: SyncPeerStatus;
+	has_error?: boolean;
 	last_error?: string;
 	runtime_version?: string | null;
 	runtime_version_observed_at?: string | null;
